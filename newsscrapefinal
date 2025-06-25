@@ -7,30 +7,29 @@ import spacy
 import pandas as pd
 import os
 
+# Download necessary NLTK tokenizer
 nltk.download('punkt')
 
-
+# Set up date variables
 today = date.today()
-d2 = today.strftime("%B %d, %Y")
-extraction_date = today.strftime("%B %d, %Y")
+formatted_date = today.strftime("%B %d, %Y")
+extraction_date = formatted_date
 
-with open("News Update for " + today.strftime("%B %d, %Y" + ".csv"), 'w', encoding='utf-8-sig', newline='') as file:
+# Output file names
+news_csv_file = f"News Update for {formatted_date}.csv"
+topics_csv_file = f"Trending Topics for {formatted_date}.csv"
+
+# Initialize output CSV
+with open(news_csv_file, 'w', encoding='utf-8-sig', newline='') as file:
     writer = csv.writer(file)
-    writer.writerow(["Title", "Summary","Keywords", "Summary Topics",  "Url", "Publishdate", "ExtractionDate"])
+    writer.writerow(["Title", "Summary", "Keywords", "Summary Topics", "Url", "Publish Date", "Extraction Date"])
 
-
-article_list = []
-corpus = []
-
+# Initialize data containers
+article_list = set()
+rows = []
 named_entities = []
-temp_entity_name = ''
-temp_named_entity = None
 
-news_repo = [
-    'https://www.manifoldtimes.com',
-    ]
-
-
+# News sources list
 news_repo_real = [
     'https://www.manifoldtimes.com',
     'https://www.marineinsight.com',
@@ -42,7 +41,6 @@ news_repo_real = [
     'https://theloadstar.com/category/news/',
     "https://smartmaritimenetwork.com/category/news/",
     "https://www.seatrade-maritime.com",
-    "https://theloadstar.com/category/news/",
     "https://gcaptain.com",
     "https://www.freightwaves.com/american-shipper",
     "https://jpt.spe.org/latest-news",
@@ -50,7 +48,6 @@ news_repo_real = [
     "https://www.bimco.org/news-and-trends/priority-news",
     "https://iumi.com/news/news",
     "https://cmacgm-group.com/en/news-medias",
-    "https://iumi.com/news/news",
     "https://www.imo.org/en/MediaCentre/Pages/default.aspx",
     "https://www.amsa.gov.au/news-community/news-and-media-releases",
     "https://namepa.net/news/",
@@ -58,89 +55,67 @@ news_repo_real = [
     "https://www.tradewindsnews.com/news",
 ]
 
-for repo in news_repo:
-    scrape_article_links = newspaper.build(repo, memoize_articles=False)
+# Load spaCy NLP model once
+nlp = spacy.load('en_core_web_sm')
 
-    for article in scrape_article_links.articles:
-
-        article_list.append(article.url)
-        print(repo)
-
-
-print(article_list)
-print(scrape_article_links.size())
-
-
-#now we use article features in newspaper to extract what we need
-
-for x in article_list:
+# Step 1: Collect article URLs from all sources
+for repo in news_repo_real:
     try:
-        article_parse = Article(x)
-    except Exception:
-        pass
+        print(f"Scraping from {repo}")
+        scraped = newspaper.build(repo, memoize_articles=False)
+        for article in scraped.articles:
+            article_list.add(article.url)
+    except Exception as e:
+        print(f"Failed to build newspaper for {repo}: {e}")
 
+print(f"Total unique articles found: {len(article_list)}")
+
+# Step 2: Process each article
+for url in article_list:
     try:
-        article_parse.download()
-    except Exception:
-        pass
+        article = Article(url)
+        article.download()
+        article.parse()
+        article.nlp()
+    except Exception as e:
+        print(f"Skipping article due to error: {url} | Error: {e}")
+        continue
 
-    try:
-        article_parse.parse()
-    except Exception:
-        pass
+    title = article.title
+    summary = article.summary
+    keywords = article.keywords
+    publishdate = article.publish_date
 
-    try:
-        article_parse.nlp()
-    except Exception:
-        pass
+    # NLP analysis of summary
+    summary_doc = nlp(summary)
+    entities = [(ent.text, ent.label_) for ent in summary_doc.ents]
+    named_entities.extend(entities)
 
-    url = x
-    title = article_parse.title
-    author = article_parse.authors
-    summary = article_parse.summary
-    keywords = article_parse.keywords
-    publishdate = article_parse.publish_date
+    rows.append([title, summary, keywords, entities, url, publishdate, extraction_date])
+    print(f"Processed: {title}")
 
-    nlp = spacy.load('en_core_web_sm')
-    summary_nlp = nlp(summary)
-    summary_nlp_topics = [(word, word.ent_type_) for word in summary_nlp if word.ent_type_]
-    corpus.append(summary_nlp_topics)
+# Step 3: Write all articles to CSV
+with open(news_csv_file, 'a', encoding='utf-8-sig', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerows(rows)
 
-    write_entity_to_csv = []
-    for word in summary_nlp:
-        term = word.text
-        tag = word.ent_type_
-        if tag:
-            temp_entity_name = ' '.join([temp_entity_name, term]).strip()
-            temp_named_entity = (temp_entity_name, tag)
-        else:
-            if temp_named_entity:
-                named_entities.append(temp_named_entity)
-                write_entity_to_csv.append(temp_named_entity)
-                temp_entity_name = ''
-                temp_named_entity = None
+# Step 4: Analyze entity frequency
+entity_df = pd.DataFrame(named_entities, columns=['Entity Name', 'Entity Type'])
 
+top_entities = (
+    entity_df.groupby(['Entity Name', 'Entity Type'])
+    .size()
+    .reset_index(name='Frequency')
+    .sort_values(by='Frequency', ascending=False)
+)
 
-    with open("News Update for " + today.strftime("%B %d, %Y"+".csv"), 'a', encoding='utf-8-sig', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow([title, summary, keywords, write_entity_to_csv, url, publishdate, extraction_date])
+# Filter out noise
+filtered_entities = top_entities[~top_entities['Entity Type'].isin(['DATE', 'CARDINAL', 'ORDINAL'])]
+filtered_entities['Date'] = extraction_date
 
-    print(x)
+# Step 5: Export trending topics
+filtered_entities.to_csv(topics_csv_file, encoding='utf-8-sig', index=False)
 
-
-entity_frame = pd.DataFrame(named_entities,
-                                columns=['Entity Name', 'Entity Type'])
-
-top_entities = (entity_frame.groupby(by=['Entity Name', 'Entity Type'])
-                .size()
-                .sort_values(ascending=False)
-                .reset_index().rename(columns={0: 'Frequency'}))
-
-top_entities["Date"] = extraction_date
-top_entities = top_entities[~top_entities['Entity Type'].str.contains('ORDINAL')]
-top_entities = top_entities[~top_entities['Entity Type'].str.contains('DATE')]
-top_entities = top_entities[~top_entities['Entity Type'].str.contains('CARDINAL')]
-
-#export
-file_name = "Trending Topics for " + today.strftime("%B %d, %Y"+".csv")
-export = top_entities.to_csv(file_name, encoding='utf-8-sig')
+print(f"\n✅ Scraping completed.")
+print(f"- Articles saved to: {news_csv_file}")
+print(f"- Trending topics saved to: {topics_csv_file}")
